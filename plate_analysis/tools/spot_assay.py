@@ -125,8 +125,9 @@ class SpotAssayConfig:
     """
 
     # ── Control row assignments ───────────────────────────────────────────
-    pc_row: str = "A"   # Positive-control row label (e.g. "A")
-    nc_row: str = "E"   # Negative-control (matrix blank) row label
+    media_pc_row:  str = "H"   # Media positive control (reference, not used for scoring)
+    matrix_pc_row: str = "G"   # Matrix positive control (PC reference for Delta-E scoring)
+    matrix_nc_row: str = "F"   # Matrix negative control (NC reference for Delta-E scoring)
 
     # ── Filled-well detection ─────────────────────────────────────────────
     # Gate 1 — HSV (catches very bright, near-transparent empty wells):
@@ -303,28 +304,30 @@ def process_image(
         }
 
     # ── Compute control means from filled wells in control rows ───────────────
-    pc_filled = [well_rows[f"{cfg.pc_row}{c}"]
-                 for c in COL_LABELS
-                 if f"{cfg.pc_row}{c}" in well_rows
-                 and well_rows[f"{cfg.pc_row}{c}"]["is_filled"]]
+    _ctrl_rows = (cfg.media_pc_row, cfg.matrix_pc_row, cfg.matrix_nc_row)
 
-    nc_filled = [well_rows[f"{cfg.nc_row}{c}"]
+    pc_filled = [well_rows[f"{cfg.matrix_pc_row}{c}"]
                  for c in COL_LABELS
-                 if f"{cfg.nc_row}{c}" in well_rows
-                 and well_rows[f"{cfg.nc_row}{c}"]["is_filled"]]
+                 if f"{cfg.matrix_pc_row}{c}" in well_rows
+                 and well_rows[f"{cfg.matrix_pc_row}{c}"]["is_filled"]]
+
+    nc_filled = [well_rows[f"{cfg.matrix_nc_row}{c}"]
+                 for c in COL_LABELS
+                 if f"{cfg.matrix_nc_row}{c}" in well_rows
+                 and well_rows[f"{cfg.matrix_nc_row}{c}"]["is_filled"]]
 
     if not pc_filled:
         status = "FAILED:no_filled_PC_wells"
         for r in well_rows.values():
             r["experiment_status"] = status
-            r["call"] = "control" if r["row"] in (cfg.pc_row, cfg.nc_row) else r["call"]
+            r["call"] = "control" if r["row"] in _ctrl_rows else r["call"]
         return status, list(well_rows.values())
 
     if not nc_filled:
         status = "FAILED:no_filled_NC_wells"
         for r in well_rows.values():
             r["experiment_status"] = status
-            r["call"] = "control" if r["row"] in (cfg.pc_row, cfg.nc_row) else r["call"]
+            r["call"] = "control" if r["row"] in _ctrl_rows else r["call"]
         return status, list(well_rows.values())
 
     pc_mean_lab = _mean_lab(pc_filled)
@@ -354,7 +357,7 @@ def process_image(
         row["experiment_status"] = status
         row_label = row["row"]
 
-        if row_label in (cfg.pc_row, cfg.nc_row):
+        if row_label in _ctrl_rows:
             row["call"] = "control"
             # Still compute ΔE for reference
             if row["is_filled"]:
@@ -395,8 +398,9 @@ _MARGIN_B  = 30
 _MARGIN_R  = 20
 _BG        = (20, 20, 20)      # dark background BGR
 _EMPTY_CLR = (55, 55, 55)      # unfilled well BGR
-_PC_BORDER = (0, 230, 230)     # cyan  — PC row
-_NC_BORDER = (30, 200, 255)    # amber/gold — NC row
+_MEDIA_PC_BORDER  = (80, 255, 80)    # green  — media positive control (H)
+_MATRIX_PC_BORDER = (0, 230, 230)    # cyan   — matrix positive control (G)
+_MATRIX_NC_BORDER = (30, 200, 255)   # amber  — matrix negative control (F)
 _DEFAULT_BORDER = (120, 120, 120)
 _POSITIVE_MARK_CLR = (0, 255, 80)   # bright green "+"
 _FONT      = cv2.FONT_HERSHEY_SIMPLEX
@@ -443,10 +447,19 @@ def draw_plate_grid(
         cv2.putText(canvas, rl, (8, y_top + _CELL // 2 + 8),
                     _FONT, 0.65, (180, 180, 180), 1, cv2.LINE_AA)
 
-        is_pc = (rl == cfg.pc_row)
-        is_nc = (rl == cfg.nc_row)
-        border_clr = _PC_BORDER if is_pc else (_NC_BORDER if is_nc else _DEFAULT_BORDER)
-        border_thick = 3 if (is_pc or is_nc) else 1
+        is_media_pc  = (rl == cfg.media_pc_row)
+        is_matrix_pc = (rl == cfg.matrix_pc_row)
+        is_matrix_nc = (rl == cfg.matrix_nc_row)
+        is_ctrl = is_media_pc or is_matrix_pc or is_matrix_nc
+        if is_media_pc:
+            border_clr = _MEDIA_PC_BORDER
+        elif is_matrix_pc:
+            border_clr = _MATRIX_PC_BORDER
+        elif is_matrix_nc:
+            border_clr = _MATRIX_NC_BORDER
+        else:
+            border_clr = _DEFAULT_BORDER
+        border_thick = 3 if is_ctrl else 1
 
         for ci, cl in enumerate(COL_LABELS):
             well = f"{rl}{cl}"
@@ -483,17 +496,23 @@ def draw_plate_grid(
                     cv2.putText(canvas, "+", (cx - tw // 2, cy + 8),
                                 _FONT, fs, _POSITIVE_MARK_CLR, 2, cv2.LINE_AA)
 
-                elif is_pc:
-                    cv2.putText(canvas, "PC", (cx - 14, cy + 6),
-                                _FONT, 0.45, (0, 0, 0), 3, cv2.LINE_AA)
-                    cv2.putText(canvas, "PC", (cx - 14, cy + 6),
-                                _FONT, 0.45, _PC_BORDER, 1, cv2.LINE_AA)
+                elif is_media_pc:
+                    cv2.putText(canvas, "MPC", (cx - 18, cy + 6),
+                                _FONT, 0.40, (0, 0, 0), 3, cv2.LINE_AA)
+                    cv2.putText(canvas, "MPC", (cx - 18, cy + 6),
+                                _FONT, 0.40, _MEDIA_PC_BORDER, 1, cv2.LINE_AA)
 
-                elif is_nc:
+                elif is_matrix_pc:
+                    cv2.putText(canvas, "GPC", (cx - 18, cy + 6),
+                                _FONT, 0.40, (0, 0, 0), 3, cv2.LINE_AA)
+                    cv2.putText(canvas, "GPC", (cx - 18, cy + 6),
+                                _FONT, 0.40, _MATRIX_PC_BORDER, 1, cv2.LINE_AA)
+
+                elif is_matrix_nc:
                     cv2.putText(canvas, "NC", (cx - 14, cy + 6),
                                 _FONT, 0.45, (0, 0, 0), 3, cv2.LINE_AA)
                     cv2.putText(canvas, "NC", (cx - 14, cy + 6),
-                                _FONT, 0.45, _NC_BORDER, 1, cv2.LINE_AA)
+                                _FONT, 0.45, _MATRIX_NC_BORDER, 1, cv2.LINE_AA)
 
     # ── Title ─────────────────────────────────────────────────────────────────
     cv2.putText(canvas, title, (10, 30),
@@ -633,10 +652,12 @@ def main():
                    help="Re-analyse images that are already in the CSV")
 
     # Configurable thresholds
-    p.add_argument("--pc-row",   default="A",
-                   help="Positive-control row label")
-    p.add_argument("--nc-row",   default="E",
-                   help="Negative-control row label")
+    p.add_argument("--media-pc-row",  default="H",
+                   help="Media positive-control row label")
+    p.add_argument("--matrix-pc-row", default="G",
+                   help="Matrix positive-control row label (PC reference for scoring)")
+    p.add_argument("--matrix-nc-row", default="F",
+                   help="Matrix negative-control row label (NC reference for scoring)")
     p.add_argument("--empty-v-thresh", type=int, default=210,
                    help="HSV V threshold above which a well is candidate empty")
     p.add_argument("--empty-s-thresh", type=int, default=25,
@@ -661,8 +682,9 @@ def main():
     args = p.parse_args()
 
     cfg = SpotAssayConfig(
-        pc_row                  = args.pc_row,
-        nc_row                  = args.nc_row,
+        media_pc_row            = args.media_pc_row,
+        matrix_pc_row           = args.matrix_pc_row,
+        matrix_nc_row           = args.matrix_nc_row,
         empty_v_thresh          = args.empty_v_thresh,
         empty_s_thresh          = args.empty_s_thresh,
         min_b_lab_filled        = args.min_b_lab_filled,
@@ -682,5 +704,5 @@ def main():
     )
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
