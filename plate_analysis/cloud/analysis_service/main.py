@@ -308,10 +308,15 @@ def _enqueue_catchup(cfg: Config, test_id: str) -> None:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@app.route("/healthz", methods=["GET"])
 @app.route("/", methods=["GET"])
-def healthz():
+def root():
     """Lightweight health check — no env vars, no GCP calls."""
+    return jsonify({"status": "ok"}), 200
+
+
+@app.route("/healthz", methods=["GET"])
+def healthz():
+    """Alias of / — same response, separate route registration."""
     return jsonify({"status": "ok"}), 200
 
 
