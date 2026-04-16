@@ -286,6 +286,10 @@ def _enqueue_catchup(cfg: Config, test_id: str) -> None:
     ts = timestamp_pb2.Timestamp()
     ts.FromSeconds(int(time.time()) + 10)
 
+    from urllib.parse import urlparse
+    parsed   = urlparse(cfg.cloud_run_url)
+    audience = f"{parsed.scheme}://{parsed.netloc}"   # base URL only, no /analyze path
+
     task = {
         "name":          name,
         "schedule_time": ts,
@@ -294,7 +298,10 @@ def _enqueue_catchup(cfg: Config, test_id: str) -> None:
             "url":         cfg.cloud_run_url,
             "headers":     {"Content-Type": "application/json"},
             "body":        json.dumps({"test_id": test_id}).encode(),
-            "oidc_token":  {"service_account_email": cfg.cloud_run_sa_email},
+            "oidc_token":  {
+                "service_account_email": cfg.cloud_run_sa_email,
+                "audience":              audience,
+            },
         },
     }
 

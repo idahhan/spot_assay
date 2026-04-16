@@ -185,6 +185,19 @@ def _upsert_and_try_queue(
     return should_queue
 
 
+def _cloud_run_audience(url: str) -> str:
+    """Return the Cloud Run base URL (no path) for use as the OIDC audience.
+
+    Cloud Run validates that the OIDC token's `aud` claim equals the service
+    base URL.  Cloud Tasks defaults to using the full task URL (including the
+    /analyze path) when no audience is specified, which causes a mismatch and
+    a 403.  Stripping the path fixes it.
+    """
+    from urllib.parse import urlparse
+    p = urlparse(url)
+    return f"{p.scheme}://{p.netloc}"
+
+
 def _enqueue_task(test_id: str, task_name: str) -> None:
     """Create a delayed Cloud Task that calls Cloud Run /analyze."""
     import json
@@ -203,7 +216,10 @@ def _enqueue_task(test_id: str, task_name: str) -> None:
             "url":         CLOUD_RUN_URL,
             "headers":     {"Content-Type": "application/json"},
             "body":        json.dumps({"test_id": test_id}).encode(),
-            "oidc_token":  {"service_account_email": CLOUD_RUN_SA_EMAIL},
+            "oidc_token":  {
+                "service_account_email": CLOUD_RUN_SA_EMAIL,
+                "audience":              _cloud_run_audience(CLOUD_RUN_URL),
+            },
         },
     }
 
