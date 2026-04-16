@@ -61,7 +61,6 @@ sys.path.insert(0, str(_HERE))
 from tools.spot_assay import SpotAssayConfig, process_folder  # noqa: E402
 
 # ── Constants (not env-dependent) ────────────────────────────────────────────
-STORAGE_PREFIX = "PiCultureCam"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 _SAFE_RE       = re.compile(r"[^a-zA-Z0-9_-]")
 
@@ -226,7 +225,7 @@ def _release_lock(
 def _list_test_images(cfg: Config, test_id: str) -> list[storage.Blob]:
     """Return all source image blobs for a test, excluding results/ outputs."""
     client = _get_gcs()
-    prefix = f"{STORAGE_PREFIX}/{test_id}/"
+    prefix = f"{test_id}/"
     blobs  = client.list_blobs(cfg.gcs_bucket, prefix=prefix)
     return [
         b for b in blobs
@@ -375,7 +374,7 @@ def analyze():
         log.info("[%s] pipeline complete", test_id)
 
         # ── Step 4: Upload results (stable overwrite) ─────────────────────────
-        gcs_results_prefix = f"{STORAGE_PREFIX}/{test_id}/results"
+        gcs_results_prefix = f"{test_id}/results"
         uploaded = _upload_dir(cfg, results_dir, gcs_results_prefix)
 
         csv_uri     = uploaded.get("well_colors.csv")
