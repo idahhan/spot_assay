@@ -46,7 +46,14 @@ COPY weights/yolo_well_best.pt weights/yolo_well_best.pt
 # Copy the service entrypoint
 COPY cloud/analysis_service/main.py main.py
 
-ENV PORT=8080
 ENV WEIGHTS_PATH=/app/weights/yolo_well_best.pt
 
-CMD ["python", "main.py"]
+# Cloud Run injects $PORT at runtime (default 8080).
+# Shell-form CMD expands $PORT; exec replaces the shell so gunicorn
+# receives SIGTERM directly.
+CMD exec gunicorn \
+      --bind "0.0.0.0:${PORT:-8080}" \
+      --workers 1 \
+      --timeout 540 \
+      --preload \
+      main:app

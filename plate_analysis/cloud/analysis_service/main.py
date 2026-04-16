@@ -237,8 +237,7 @@ def _enqueue_catchup(test_id: str) -> None:
     """Enqueue a new analysis task for images that arrived during this run."""
     from google.cloud import tasks_v2
 
-    client   = _get_gcs().__class__  # just for import visibility; use tasks client below
-    tc       = tasks_v2.CloudTasksClient()
+    tc = tasks_v2.CloudTasksClient()
     parent   = tc.queue_path(GCP_PROJECT, QUEUE_LOCATION, QUEUE_ID)
     safe_id  = _SAFE_RE.sub("-", test_id)[:200]
     bucket   = math.floor(time.time() / QUIET_PERIOD_SECS)
