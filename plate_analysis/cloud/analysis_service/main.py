@@ -4,6 +4,7 @@ cloud/analysis_service/main.py
 Cloud Run analysis service.
 
 POST /analyze   body: { "test_id": "..." }
+GET  /healthz   → 200  (no env vars required)
 
 Processing flow:
   1. Parse and validate request.
@@ -23,15 +24,14 @@ Storage layout (all under the same GCS bucket):
   PiCultureCam/{test_id}/results/latest_summary.png
   PiCultureCam/{test_id}/results/plate_grids/      ← per-image grids
 
-Environment variables:
+Environment variables (read lazily at first POST request, not at import):
   GCS_BUCKET         — GCS bucket name (e.g. "myproject.appspot.com")
   GCP_PROJECT        — GCP project ID
   QUEUE_LOCATION     — Cloud Tasks queue region
   QUEUE_ID           — Cloud Tasks queue name
   CLOUD_RUN_URL      — this service's own /analyze URL (for self-requeue)
   CLOUD_RUN_SA_EMAIL — service account for OIDC auth
-  WEIGHTS_PATH       — (optional) path to YOLO weights inside the container
-                       defaults to /app/weights/yolo_well_best.pt
+  WEIGHTS_PATH       — (optional) defaults to /app/weights/yolo_well_best.pt
   QUIET_PERIOD_SECS  — (optional, default 120) must match event_router value
 """
 
@@ -47,6 +47,7 @@ import sys
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from flask import Flask, request, jsonify
@@ -59,18 +60,10 @@ sys.path.insert(0, str(_HERE))
 
 from tools.spot_assay import SpotAssayConfig, process_folder  # noqa: E402
 
-# ── Config ────────────────────────────────────────────────────────────────────
-GCS_BUCKET         = os.environ["GCS_BUCKET"]
-GCP_PROJECT        = os.environ["GCP_PROJECT"]
-QUEUE_LOCATION     = os.environ["QUEUE_LOCATION"]
-QUEUE_ID           = os.environ["QUEUE_ID"]
-CLOUD_RUN_URL      = os.environ["CLOUD_RUN_URL"]
-CLOUD_RUN_SA_EMAIL = os.environ["CLOUD_RUN_SA_EMAIL"]
-WEIGHTS_PATH       = Path(os.getenv("WEIGHTS_PATH", "/app/weights/yolo_well_best.pt"))
-QUIET_PERIOD_SECS  = int(os.getenv("QUIET_PERIOD_SECS", "120"))
-
-STORAGE_PREFIX     = "PiCultureCam"
-IMAGE_SUFFIXES     = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+# ── Constants (not env-dependent) ────────────────────────────────────────────
+STORAGE_PREFIX = "PiCultureCam"
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+_SAFE_RE       = re.compile(r"[^a-zA-Z0-9_-]")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -97,6 +90,56 @@ def _get_gcs() -> storage.Client:
     if _gcs is None:
         _gcs = storage.Client()
     return _gcs
+
+
+# ── Runtime config (read lazily, cached after first call) ─────────────────────
+
+@dataclass
+class Config:
+    gcs_bucket:         str
+    gcp_project:        str
+    queue_location:     str
+    queue_id:           str
+    cloud_run_url:      str
+    cloud_run_sa_email: str
+    weights_path:       Path
+    quiet_period_secs:  int
+
+
+_config: Config | None = None
+
+
+def get_config() -> Config:
+    """
+    Read all required env vars and return a Config.
+
+    Cached after the first call so os.environ is only hit once per instance.
+    Raises KeyError (with a clear message) if a required var is missing —
+    the caller catches this and returns a JSON 500 rather than crashing.
+    """
+    global _config
+    if _config is not None:
+        return _config
+
+    required = [
+        "GCS_BUCKET", "GCP_PROJECT", "QUEUE_LOCATION",
+        "QUEUE_ID", "CLOUD_RUN_URL", "CLOUD_RUN_SA_EMAIL",
+    ]
+    missing = [k for k in required if not os.environ.get(k)]
+    if missing:
+        raise KeyError(f"Missing required environment variables: {', '.join(missing)}")
+
+    _config = Config(
+        gcs_bucket         = os.environ["GCS_BUCKET"],
+        gcp_project        = os.environ["GCP_PROJECT"],
+        queue_location     = os.environ["QUEUE_LOCATION"],
+        queue_id           = os.environ["QUEUE_ID"],
+        cloud_run_url      = os.environ["CLOUD_RUN_URL"],
+        cloud_run_sa_email = os.environ["CLOUD_RUN_SA_EMAIL"],
+        weights_path       = Path(os.getenv("WEIGHTS_PATH", "/app/weights/yolo_well_best.pt")),
+        quiet_period_secs  = int(os.getenv("QUIET_PERIOD_SECS", "120")),
+    )
+    return _config
 
 
 # ── Firestore lock: claim ─────────────────────────────────────────────────────
@@ -152,12 +195,11 @@ def _release_lock(
     snap = doc_ref.get(transaction=transaction)
     data: dict = snap.to_dict() or {}
 
-    # Safety: only release if we still own the lock
     if data.get("current_job_id") != job_id:
         log.warning("Lock ownership changed — skipping release for job %s.", job_id)
         return False
 
-    current_total = data.get("image_count", 0)
+    current_total      = data.get("image_count", 0)
     new_images_arrived = current_total > processed_count
 
     fields = {
@@ -168,7 +210,6 @@ def _release_lock(
     }
 
     if new_images_arrived:
-        # Override status so the catch-up task will be allowed to run
         fields["status"]           = "queued"
         fields["last_enqueued_at"] = firestore.SERVER_TIMESTAMP
         log.info(
@@ -182,11 +223,11 @@ def _release_lock(
 
 # ── GCS helpers ───────────────────────────────────────────────────────────────
 
-def _list_test_images(test_id: str) -> list[storage.Blob]:
+def _list_test_images(cfg: Config, test_id: str) -> list[storage.Blob]:
     """Return all source image blobs for a test, excluding results/ outputs."""
     client = _get_gcs()
     prefix = f"{STORAGE_PREFIX}/{test_id}/"
-    blobs  = client.list_blobs(GCS_BUCKET, prefix=prefix)
+    blobs  = client.list_blobs(cfg.gcs_bucket, prefix=prefix)
     return [
         b for b in blobs
         if "/results/" not in b.name
@@ -203,25 +244,25 @@ def _download_images(blobs: list[storage.Blob], dest: Path) -> None:
         log.debug("Downloaded %s", blob.name)
 
 
-def _upload_dir(local_dir: Path, gcs_prefix: str) -> dict[str, str]:
+def _upload_dir(cfg: Config, local_dir: Path, gcs_prefix: str) -> dict[str, str]:
     """
     Recursively upload everything in local_dir to gcs_prefix/.
 
-    Returns a mapping of relative filename → gs:// URI for every file uploaded.
+    Returns a mapping of relative path → gs:// URI for every file uploaded.
     All uploads overwrite the existing object — results are always the latest run.
     """
     client  = _get_gcs()
-    bucket  = client.bucket(GCS_BUCKET)
+    bucket  = client.bucket(cfg.gcs_bucket)
     out_map: dict[str, str] = {}
 
     for local_file in local_dir.rglob("*"):
         if not local_file.is_file():
             continue
-        relative    = local_file.relative_to(local_dir)
-        gcs_path    = f"{gcs_prefix}/{relative}"
-        blob        = bucket.blob(gcs_path)
+        relative = local_file.relative_to(local_dir)
+        gcs_path = f"{gcs_prefix}/{relative}"
+        blob     = bucket.blob(gcs_path)
         blob.upload_from_filename(str(local_file))
-        gcs_uri     = f"gs://{GCS_BUCKET}/{gcs_path}"
+        gcs_uri  = f"gs://{cfg.gcs_bucket}/{gcs_path}"
         out_map[str(relative)] = gcs_uri
         log.info("Uploaded  %s  →  %s", local_file.name, gcs_uri)
 
@@ -230,31 +271,28 @@ def _upload_dir(local_dir: Path, gcs_prefix: str) -> dict[str, str]:
 
 # ── Self-requeue helper ───────────────────────────────────────────────────────
 
-_SAFE_RE = re.compile(r"[^a-zA-Z0-9_-]")
-
-
-def _enqueue_catchup(test_id: str) -> None:
+def _enqueue_catchup(cfg: Config, test_id: str) -> None:
     """Enqueue a new analysis task for images that arrived during this run."""
     from google.cloud import tasks_v2
 
-    tc = tasks_v2.CloudTasksClient()
-    parent   = tc.queue_path(GCP_PROJECT, QUEUE_LOCATION, QUEUE_ID)
-    safe_id  = _SAFE_RE.sub("-", test_id)[:200]
-    bucket   = math.floor(time.time() / QUIET_PERIOD_SECS)
-    name     = f"{parent}/tasks/{safe_id}--{bucket}"
+    tc      = tasks_v2.CloudTasksClient()
+    parent  = tc.queue_path(cfg.gcp_project, cfg.queue_location, cfg.queue_id)
+    safe_id = _SAFE_RE.sub("-", test_id)[:200]
+    bucket  = math.floor(time.time() / cfg.quiet_period_secs)
+    name    = f"{parent}/tasks/{safe_id}--{bucket}"
 
     ts = timestamp_pb2.Timestamp()
-    ts.FromSeconds(int(time.time()) + 10)   # short delay for catch-up runs
+    ts.FromSeconds(int(time.time()) + 10)
 
     task = {
         "name":          name,
         "schedule_time": ts,
         "http_request": {
             "http_method": tasks_v2.HttpMethod.POST,
-            "url":         CLOUD_RUN_URL,
+            "url":         cfg.cloud_run_url,
             "headers":     {"Content-Type": "application/json"},
             "body":        json.dumps({"test_id": test_id}).encode(),
-            "oidc_token":  {"service_account_email": CLOUD_RUN_SA_EMAIL},
+            "oidc_token":  {"service_account_email": cfg.cloud_run_sa_email},
         },
     }
 
@@ -268,10 +306,24 @@ def _enqueue_catchup(test_id: str) -> None:
             log.warning("Catch-up enqueue failed for %s: %s", test_id, exc)
 
 
-# ── Main endpoint ─────────────────────────────────────────────────────────────
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.route("/healthz", methods=["GET"])
+@app.route("/", methods=["GET"])
+def healthz():
+    """Lightweight health check — no env vars, no GCP calls."""
+    return jsonify({"status": "ok"}), 200
+
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
+    # ── Resolve config (fails fast with JSON error if env vars are missing) ───
+    try:
+        cfg = get_config()
+    except KeyError as exc:
+        log.error("Configuration error: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
     body    = request.get_json(force=True) or {}
     test_id = str(body.get("test_id", "")).strip()
 
@@ -291,7 +343,7 @@ def analyze():
     tmp_dir = Path(tempfile.mkdtemp(prefix=f"spot_assay_{test_id}_"))
     try:
         # ── Step 2: List and download all source images ────────────────────────
-        blobs = _list_test_images(test_id)
+        blobs = _list_test_images(cfg, test_id)
         if not blobs:
             log.warning("[%s] no images found in GCS", test_id)
             outcome = {"status": "failed", "error_message": "no images found in storage"}
@@ -307,20 +359,19 @@ def analyze():
         log.info("[%s] downloaded %d image(s)", test_id, image_count)
 
         # ── Step 3: Run spot_assay pipeline ───────────────────────────────────
-        # Always full reprocess: we downloaded a fresh set, no incremental state.
-        cfg = SpotAssayConfig()   # uses hardcoded defaults: H=MPC, G=GPC, F=NC
+        spot_cfg = SpotAssayConfig()   # defaults: H=MPC, G=GPC, F=NC
         process_folder(
             plates_dir=images_dir,
-            weights_path=WEIGHTS_PATH,
+            weights_path=cfg.weights_path,
             out_dir=results_dir,
-            cfg=cfg,
+            cfg=spot_cfg,
             reprocess=True,
         )
         log.info("[%s] pipeline complete", test_id)
 
         # ── Step 4: Upload results (stable overwrite) ─────────────────────────
         gcs_results_prefix = f"{STORAGE_PREFIX}/{test_id}/results"
-        uploaded = _upload_dir(results_dir, gcs_results_prefix)
+        uploaded = _upload_dir(cfg, results_dir, gcs_results_prefix)
 
         csv_uri     = uploaded.get("well_colors.csv")
         summary_uri = uploaded.get("latest_summary.png")
@@ -337,7 +388,7 @@ def analyze():
         )
 
         if needs_requeue:
-            _enqueue_catchup(test_id)
+            _enqueue_catchup(cfg, test_id)
 
         return jsonify({
             "status":  "complete",
@@ -363,11 +414,6 @@ def analyze():
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-
-
-@app.route("/healthz", methods=["GET"])
-def healthz():
-    return jsonify({"status": "ok"}), 200
 
 
 if __name__ == "__main__":  # pragma: no cover
