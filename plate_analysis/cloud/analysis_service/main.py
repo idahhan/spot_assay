@@ -80,7 +80,8 @@ _gcs: storage.Client | None = None
 def _get_db() -> firestore.Client:
     global _db
     if _db is None:
-        _db = firestore.Client()
+        cfg = get_config()
+        _db = firestore.Client(database=cfg.firestore_db)
     return _db
 
 
@@ -103,6 +104,7 @@ class Config:
     cloud_run_sa_email: str
     weights_path:       Path
     quiet_period_secs:  int
+    firestore_db:       str
 
 
 _config: Config | None = None
@@ -137,6 +139,7 @@ def get_config() -> Config:
         cloud_run_sa_email = os.environ["CLOUD_RUN_SA_EMAIL"],
         weights_path       = Path(os.getenv("WEIGHTS_PATH", "/app/weights/yolo_well_best.pt")),
         quiet_period_secs  = int(os.getenv("QUIET_PERIOD_SECS", "120")),
+        firestore_db       = os.getenv("FIRESTORE_DB", "plate-analysis"),
     )
     return _config
 

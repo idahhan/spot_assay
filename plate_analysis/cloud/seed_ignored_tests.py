@@ -29,13 +29,14 @@ from datetime import datetime, timezone
 
 from google.cloud import firestore, storage
 
-GCS_BUCKET  = os.getenv("GCS_BUCKET",  "piculturecam.appspot.com")
-GCP_PROJECT = os.getenv("GCP_PROJECT", "piculturecam")
+GCS_BUCKET    = os.getenv("GCS_BUCKET",    "piculturecam.appspot.com")
+GCP_PROJECT   = os.getenv("GCP_PROJECT",   "piculturecam")
+FIRESTORE_DB  = os.getenv("FIRESTORE_DB",  "plate-analysis")
 
 
 def seed() -> None:
     gcs = storage.Client(project=GCP_PROJECT)
-    db  = firestore.Client(project=GCP_PROJECT)
+    db  = firestore.Client(project=GCP_PROJECT, database=FIRESTORE_DB)
 
     # The GCS "delimiter" API returns virtual top-level folder names as
     # common prefixes (e.g. "test-rami/").  We must exhaust the iterator

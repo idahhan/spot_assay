@@ -70,6 +70,7 @@ QUEUE_LOCATION     = os.environ["QUEUE_LOCATION"]
 QUEUE_ID           = os.environ["QUEUE_ID"]
 CLOUD_RUN_URL      = os.environ["CLOUD_RUN_URL"]
 CLOUD_RUN_SA_EMAIL = os.environ["CLOUD_RUN_SA_EMAIL"]
+FIRESTORE_DB       = os.getenv("FIRESTORE_DB", "plate-analysis")
 
 # ── Lazy singletons ───────────────────────────────────────────────────────────
 _db: firestore.Client | None = None
@@ -80,7 +81,7 @@ _ignored_tests: frozenset[str] | None = None   # loaded from Firestore once per 
 def _get_db() -> firestore.Client:
     global _db
     if _db is None:
-        _db = firestore.Client()
+        _db = firestore.Client(database=FIRESTORE_DB)
     return _db
 
 
