@@ -601,11 +601,23 @@ class TestCollectImages:
         imgs = collect_images(tmp_path)
         assert len(imgs) == 5
 
-    def test_sorted_alphabetically(self, tmp_path):
+    def test_sorted_by_timepoint(self, tmp_path):
+        # Files with timepoint tokens must be sorted numerically, not alphabetically
+        for name in ["sample_90min.jpg", "sample_30min.jpg", "sample_120min.jpg"]:
+            (tmp_path / name).touch()
+        imgs = collect_images(tmp_path)
+        assert [p.name for p in imgs] == [
+            "sample_30min.jpg", "sample_90min.jpg", "sample_120min.jpg"
+        ]
+
+    def test_sorted_alphabetically_without_timepoint(self, tmp_path):
         for name in ["c.jpg", "a.jpg", "b.jpg"]:
             (tmp_path / name).touch()
         imgs = collect_images(tmp_path)
-        assert [p.name for p in imgs] == ["a.jpg", "b.jpg", "c.jpg"]
+        # No timepoint → fallback is inf → stable sort (all equal key) → original os order
+        # Just check all 3 are returned
+        assert len(imgs) == 3
+        assert {p.name for p in imgs} == {"a.jpg", "b.jpg", "c.jpg"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

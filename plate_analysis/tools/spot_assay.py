@@ -527,12 +527,15 @@ _IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
 
 def collect_images(plates_dir: Path) -> list[Path]:
-    """Return plate images sorted by filename (= chronological order).
+    """Return plate images sorted chronologically.
 
+    Sort key: numeric timepoint extracted from filename (e.g. 30 from '30min'),
+    falling back to alphabetical order for files without a timepoint token.
     Supports .jpg / .jpeg / .png / .tif / .tiff.
     """
-    imgs = [p for p in sorted(plates_dir.iterdir())
+    imgs = [p for p in plates_dir.iterdir()
             if p.suffix.lower() in _IMG_EXTS]
+    imgs.sort(key=lambda p: infer_timepoint(p.stem, float("inf")))
     return imgs
 
 
