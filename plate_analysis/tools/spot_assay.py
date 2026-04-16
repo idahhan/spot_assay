@@ -227,14 +227,42 @@ def classify_filled(color_data: dict, cfg: SpotAssayConfig) -> bool:
 
 # ── Timepoint extraction ──────────────────────────────────────────────────────
 
-def infer_timepoint(stem: str, index: int) -> int:
+_TS_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})")
+_TS_FORMAT  = "%Y-%m-%d_%H-%M-%S"
+
+
+def _parse_ts(stem: str):
+    """Return a datetime parsed from a YYYY-MM-DD_HH-MM-SS token, or None."""
+    from datetime import datetime
+    m = _TS_PATTERN.search(stem)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), _TS_FORMAT)
+    except ValueError:
+        return None
+
+
+def infer_timepoint(stem: str, index: int, ref_stem: str | None = None) -> int:
     """Extract a timepoint in minutes from the filename stem.
 
-    Looks for the first occurrence of  <digits>min  (case-insensitive).
-    Falls back to the loop index (0, 1, 2, …) if no token is found.
+    Priority:
+    1. Explicit  <digits>min  token  (e.g. Oat_milk_LOD_30min.jpg → 30)
+    2. Timestamp token YYYY-MM-DD_HH-MM-SS with a reference stem provided
+       → elapsed minutes from the reference image (first image in the folder)
+    3. Fall back to the loop index.
     """
     m = re.search(r"(\d+)min", stem, re.IGNORECASE)
-    return int(m.group(1)) if m else index
+    if m:
+        return int(m.group(1))
+
+    curr_dt = _parse_ts(stem)
+    if curr_dt is not None and ref_stem is not None:
+        ref_dt = _parse_ts(ref_stem)
+        if ref_dt is not None:
+            return int((curr_dt - ref_dt).total_seconds() / 60)
+
+    return index
 
 
 # ── Single-image processing ───────────────────────────────────────────────────
@@ -529,13 +557,25 @@ _IMG_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 def collect_images(plates_dir: Path) -> list[Path]:
     """Return plate images sorted chronologically.
 
-    Sort key: numeric timepoint extracted from filename (e.g. 30 from '30min'),
-    falling back to alphabetical order for files without a timepoint token.
+    Sort key (in priority order):
+    1. Explicit <digits>min token → numeric sort   (e.g. 30min < 90min < 120min)
+    2. Timestamp token YYYY-MM-DD_HH-MM-SS         → alphabetical = chronological
+    3. Everything else                              → alphabetical by filename
+
     Supports .jpg / .jpeg / .png / .tif / .tiff.
     """
     imgs = [p for p in plates_dir.iterdir()
             if p.suffix.lower() in _IMG_EXTS]
-    imgs.sort(key=lambda p: infer_timepoint(p.stem, float("inf")))
+
+    def _key(p: Path):
+        m = re.search(r"(\d+)min", p.stem, re.IGNORECASE)
+        if m:
+            return (0, int(m.group(1)), p.stem)   # numeric timepoint
+        if _TS_PATTERN.search(p.stem):
+            return (1, 0, p.stem)                  # timestamp → alpha = chrono
+        return (2, 0, p.stem)                      # other → alpha
+
+    imgs.sort(key=_key)
     return imgs
 
 
@@ -596,10 +636,11 @@ def process_folder(
 
         last_grid_path: Optional[Path] = None
 
+        ref_stem = images[0].stem if images else None
         for idx, img_path in enumerate(to_process):
             # Use absolute index within full sorted list for timepoint fallback
             abs_idx = images.index(img_path)
-            timepoint = infer_timepoint(img_path.stem, abs_idx)
+            timepoint = infer_timepoint(img_path.stem, abs_idx, ref_stem=ref_stem)
 
             print(f"\n[{idx+1}/{len(to_process)}] {img_path.name}  "
                   f"(t={timepoint} min)")

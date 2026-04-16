@@ -38,6 +38,7 @@ from tools.spot_assay import (
     process_image,
     _lab_from_row,
     _mean_lab,
+    _parse_ts,
 )
 from tools.yolo_color_pipeline import (
     _hue_name,
@@ -280,6 +281,43 @@ class TestInferTimepoint:
 
     def test_index_zero_fallback(self):
         assert infer_timepoint("sample", 0) == 0
+
+    # ── Timestamp filenames ──────────────────────────────────────────────────
+
+    def test_timestamp_elapsed_minutes(self):
+        ref  = "2024-04-02_14-00-00"
+        curr = "2024-04-02_14-30-00"
+        assert infer_timepoint(curr, 0, ref_stem=ref) == 30
+
+    def test_timestamp_elapsed_across_hours(self):
+        ref  = "2024-04-02_13-45-00"
+        curr = "2024-04-02_15-15-00"
+        assert infer_timepoint(curr, 0, ref_stem=ref) == 90
+
+    def test_timestamp_no_ref_falls_back_to_index(self):
+        assert infer_timepoint("2024-04-02_14-30-00", 5) == 5
+
+    def test_timestamp_ref_no_ts_in_ref_falls_back(self):
+        # ref_stem has no timestamp token → falls back to index
+        assert infer_timepoint("2024-04-02_14-30-00", 3, ref_stem="no_timestamp") == 3
+
+    def test_min_token_takes_priority_over_timestamp(self):
+        # If the stem has both a min token and a timestamp, min wins
+        assert infer_timepoint("run_45min_2024-04-02_14-00-00", 0) == 45
+
+
+class TestParseTs:
+    def test_valid_timestamp_returns_datetime(self):
+        from datetime import datetime
+        dt = _parse_ts("2024-04-02_14-23-41")
+        assert dt == datetime(2024, 4, 2, 14, 23, 41)
+
+    def test_no_match_returns_none(self):
+        assert _parse_ts("sample_90min") is None
+
+    def test_malformed_date_values_return_none(self):
+        # Regex matches but month 13 is invalid → ValueError branch (lines 242-243)
+        assert _parse_ts("2024-13-01_00-00-00") is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -618,6 +656,30 @@ class TestCollectImages:
         # Just check all 3 are returned
         assert len(imgs) == 3
         assert {p.name for p in imgs} == {"a.jpg", "b.jpg", "c.jpg"}
+
+    def test_timestamp_files_sorted_chronologically(self, tmp_path):
+        # Timestamp filenames: alphabetical order = chronological order (line 575 branch)
+        names = [
+            "2024-04-02_16-00-00.jpg",
+            "2024-04-02_14-00-00.jpg",
+            "2024-04-02_15-00-00.jpg",
+        ]
+        for name in names:
+            (tmp_path / name).touch()
+        imgs = collect_images(tmp_path)
+        assert [p.name for p in imgs] == [
+            "2024-04-02_14-00-00.jpg",
+            "2024-04-02_15-00-00.jpg",
+            "2024-04-02_16-00-00.jpg",
+        ]
+
+    def test_min_files_before_timestamp_files(self, tmp_path):
+        # min-token files (tier 0) must come before timestamp files (tier 1)
+        for name in ["2024-04-02_15-00-00.jpg", "sample_30min.jpg"]:
+            (tmp_path / name).touch()
+        imgs = collect_images(tmp_path)
+        assert imgs[0].name == "sample_30min.jpg"
+        assert imgs[1].name == "2024-04-02_15-00-00.jpg"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
