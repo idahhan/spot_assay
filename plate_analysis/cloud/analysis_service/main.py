@@ -165,12 +165,16 @@ def _claim_lock(
         log.info("Lock held by job %s — exiting cleanly.", data.get("current_job_id"))
         return False
 
-    transaction.update(doc_ref, {
+    fields = {
         "status":         "running",
         "current_job_id": job_id,
         "last_run_at":    firestore.SERVER_TIMESTAMP,
         "error_message":  None,
-    })
+    }
+    if snap.exists:
+        transaction.update(doc_ref, fields)
+    else:
+        transaction.set(doc_ref, fields)
     return True
 
 

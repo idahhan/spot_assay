@@ -1,0 +1,15 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - -f
+      - cloud/analysis_service/Dockerfile
+      - -t
+      - us-central1-docker.pkg.dev/piculturecam/plate-analysis/analysis-service:latest
+      - .
+
+images:
+  - us-central1-docker.pkg.dev/piculturecam/plate-analysis/analysis-service:latest
+
+options:
+  machineType: 'E2_HIGHCPU_8'

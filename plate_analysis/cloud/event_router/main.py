@@ -208,6 +208,12 @@ def _enqueue_task(test_id: str, task_name: str) -> None:
     ts = timestamp_pb2.Timestamp()
     ts.FromSeconds(scheduled_epoch)
 
+    audience = _cloud_run_audience(CLOUD_RUN_URL)
+    log.info(
+        "[DEBUG] Enqueueing task | target_url=%s | oidc_audience=%s | sa_email=%s | task_name=%s",
+        CLOUD_RUN_URL, audience, CLOUD_RUN_SA_EMAIL, task_name,
+    )
+
     task = {
         "name":          task_name,
         "schedule_time": ts,
@@ -218,17 +224,18 @@ def _enqueue_task(test_id: str, task_name: str) -> None:
             "body":        json.dumps({"test_id": test_id}).encode(),
             "oidc_token":  {
                 "service_account_email": CLOUD_RUN_SA_EMAIL,
-                "audience":              _cloud_run_audience(CLOUD_RUN_URL),
+                "audience":              audience,
             },
         },
     }
 
     try:
         client.create_task(request={"parent": _queue_path(), "task": task})
+        log.info("[DEBUG] Task created successfully for test_id=%s", test_id)
     except Exception as exc:
         if "ALREADY_EXISTS" in str(exc):
             # Same time bucket → burst successfully collapsed
-            pass
+            log.info("[DEBUG] Task already exists (burst collapsed) for test_id=%s", test_id)
         else:
             raise
 

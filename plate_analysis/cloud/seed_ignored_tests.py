@@ -29,9 +29,9 @@ from datetime import datetime, timezone
 
 from google.cloud import firestore, storage
 
-GCS_BUCKET    = os.getenv("GCS_BUCKET",    "piculturecam.appspot.com")
-GCP_PROJECT   = os.getenv("GCP_PROJECT",   "piculturecam")
-FIRESTORE_DB  = os.getenv("FIRESTORE_DB",  "plate-analysis")
+GCS_BUCKET    = os.environ["GCS_BUCKET"]
+GCP_PROJECT   = os.environ["GCP_PROJECT"]
+FIRESTORE_DB  = os.getenv("FIRESTORE_DB", "plate-analysis")
 
 
 def seed() -> None:
